@@ -272,3 +272,39 @@ fn names_and_paths() {
     assert_eq!(Mode::of("save"), Mode::Save);
     assert_eq!(Mode::of("junk"), Mode::Open);
 }
+
+#[test]
+fn opening_a_remote_path_fetches_it_once_until_it_arrives() {
+    let (mut app, inbox, log) = remote_app();
+    let path = "/rw/docs/a.vectorcraft";
+    let r = crate::io::open_file(&mut app, path, false).unwrap();
+    assert_eq!(r["pending"], "fetch");
+    assert!(app.ui.status.contains("Fetching a.vectorcraft"), "{}", app.ui.status);
+    // Open Recent clicked again while it is on its way
+    crate::io::open_file(&mut app, path, false).unwrap();
+    assert_eq!(log.borrow().fetched, [(path.to_string(), Purpose::Open)]);
+    inbox.lock().unwrap().push(RemoteEvent::Fetched { path: path.into(), purpose: Purpose::Open, result: Ok(native_bytes()) });
+    crate::remote::drain(&mut app);
+    assert_eq!(app.session.active().and_then(|d| d.path.clone()).as_deref(), Some(path));
+    assert!(app.remote_opening.is_empty());
+}
+
+#[test]
+fn a_failed_remote_open_can_be_tried_again() {
+    let (mut app, inbox, log) = remote_app();
+    let path = "/rw/gone.vectorcraft";
+    crate::io::open_file(&mut app, path, false).unwrap();
+    inbox.lock().unwrap().push(RemoteEvent::Fetched { path: path.into(), purpose: Purpose::Open, result: Err("timed out".into()) });
+    crate::remote::drain(&mut app);
+    assert!(app.ui.status.contains("gone.vectorcraft"), "{}", app.ui.status);
+    crate::io::open_file(&mut app, path, false).unwrap();
+    assert_eq!(log.borrow().fetched.len(), 2);
+}
+
+#[test]
+fn other_paths_still_read_locally() {
+    let (mut app, _, log) = remote_app();
+    let e = crate::io::open_file(&mut app, "/elsewhere/a.vectorcraft", false).unwrap_err();
+    assert!(!e.is_empty());
+    assert!(log.borrow().fetched.is_empty());
+}
