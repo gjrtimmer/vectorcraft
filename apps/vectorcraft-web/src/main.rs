@@ -29,6 +29,23 @@ mod keys;
 mod locks;
 #[cfg(any(target_arch = "wasm32", test))]
 mod pencil;
+// The pure remote-storage modules (config, WebDAV parsing, save protocol) also build natively for their tests.
+// They are shared as they are with other craft apps, so some items (ranged reads) go unused here.
+#[cfg(any(target_arch = "wasm32", test))]
+#[allow(dead_code)]
+mod remote_config;
+#[cfg(test)]
+mod remote_config_tests;
+#[cfg(any(target_arch = "wasm32", test))]
+#[allow(dead_code)]
+mod remote_dav;
+#[cfg(test)]
+mod remote_dav_tests;
+#[cfg(any(target_arch = "wasm32", test))]
+#[allow(dead_code)]
+mod remote_write;
+#[cfg(test)]
+mod remote_write_tests;
 #[cfg(any(target_arch = "wasm32", test))]
 mod saved_files;
 #[cfg(target_arch = "wasm32")]
