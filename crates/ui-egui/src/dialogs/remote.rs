@@ -66,6 +66,7 @@ fn crumbs(mounts: &[RemoteMount], dir: &str) -> Vec<(String, String)> {
     out
 }
 
+/// Draw the dialog's body: the breadcrumbs, the folder listing and the name field.
 fn body(app: &mut VectorcraftApp, ui: &mut egui::Ui, d: &mut Dialog) -> bool {
     let t = Tokens::get(ui.ctx());
     let mode = Mode::of(&d.str("mode"));

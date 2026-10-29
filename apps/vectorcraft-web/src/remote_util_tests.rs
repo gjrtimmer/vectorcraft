@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use crate::remote_util::{META_TIMEOUT, TRANSFER_TIMEOUT, timeout_for, timeout_message};
 
+/// Limits follow the method.
 #[test]
 fn limits_follow_the_method() {
     for m in ["PROPFIND", "HEAD", "MOVE", "DELETE"] {
@@ -17,6 +18,7 @@ fn limits_follow_the_method() {
     assert!(msg.contains("PROPFIND") && msg.contains("20 s"), "{msg}");
 }
 
+/// A listing keeps its error until the retry runs a while.
 #[test]
 fn a_listing_keeps_its_error_until_the_retry_runs_a_while() {
     use crate::remote_util::{LOADING_GRACE_S, ListingView::*, listing_view};

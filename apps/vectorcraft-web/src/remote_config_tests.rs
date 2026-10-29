@@ -4,14 +4,17 @@ use crate::remote_config::{Config, parent, parse};
 
 const ORIGIN: &str = "https://app.example";
 
+/// A config with one writable and one read-only mount.
 fn cfg(json: &str) -> Result<Config, String> {
     parse(json.as_bytes(), ORIGIN, "/app/")
 }
 
+/// A config with one mount.
 fn one() -> Config {
     cfg(r#"{"remote":{"mounts":[{"path":"/data","url":"dav/","name":"Server"}]}}"#).unwrap()
 }
 
+/// Relative and same origin urls resolve to a url path.
 #[test]
 fn relative_and_same_origin_urls_resolve_to_a_url_path() {
     assert_eq!(one().mounts[0].url_path, "/app/dav/");
@@ -22,6 +25,7 @@ fn relative_and_same_origin_urls_resolve_to_a_url_path() {
     assert!(!c.mounts[0].writable);
 }
 
+/// Foreign or odd urls are refused.
 #[test]
 fn foreign_or_odd_urls_are_refused() {
     for url in [
@@ -42,6 +46,7 @@ fn foreign_or_odd_urls_are_refused() {
     }
 }
 
+/// Bad configs are refused.
 #[test]
 fn bad_configs_are_refused() {
     for j in [
@@ -64,6 +69,7 @@ fn bad_configs_are_refused() {
     assert!(parse(&vec![b' '; 70_000], ORIGIN, "/").is_err());
 }
 
+/// Longest prefix mount wins and segments are encoded.
 #[test]
 fn longest_prefix_mount_wins_and_segments_are_encoded() {
     let c = cfg(r#"{"remote":{"mounts":[{"path":"/data","url":"dav/"},{"path":"/other","url":"o/"}]}}"#).unwrap();
@@ -76,6 +82,7 @@ fn longest_prefix_mount_wins_and_segments_are_encoded() {
     assert!(c.url_for("/files/a").is_err());
 }
 
+/// Hostile virtual paths never map.
 #[test]
 fn hostile_virtual_paths_never_map() {
     let c = one();
@@ -88,6 +95,7 @@ fn hostile_virtual_paths_never_map() {
     assert!(c.url_for(&format!("/data/{}", "a".repeat(5000))).is_err());
 }
 
+/// Hrefs map back under the mount only.
 #[test]
 fn hrefs_map_back_under_the_mount_only() {
     let c = one();
@@ -117,6 +125,7 @@ fn hrefs_map_back_under_the_mount_only() {
     }
 }
 
+/// Parent of paths.
 #[test]
 fn parent_of_paths() {
     assert_eq!(parent("/data/a/b.mp4"), Some("/data/a"));
@@ -124,6 +133,7 @@ fn parent_of_paths() {
     assert_eq!(parent("/data"), None);
 }
 
+/// List cache seconds defaults is read and clamped.
 #[test]
 fn list_cache_seconds_defaults_is_read_and_clamped() {
     let with = |extra: &str| cfg(&format!(r#"{{"remote":{{"mounts":[{{"path":"/data","url":"dav/"}}]{extra}}}}}"#)).unwrap().list_cache_s;
@@ -138,6 +148,7 @@ fn list_cache_seconds_defaults_is_read_and_clamped() {
     }
 }
 
+/// Reserved roots are refused and other roots accepted.
 #[test]
 fn reserved_roots_are_refused_and_other_roots_accepted() {
     use crate::remote_roots::RESERVED_ROOTS;
