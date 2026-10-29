@@ -10,7 +10,8 @@ use std::collections::{HashMap, HashSet};
 
 use vectorcraft_ui_egui::remote::{RemoteEvent, RemoteInbox};
 
-use crate::remote::{cfg_and_origin, fetch, header};
+use crate::remote::cfg_and_origin;
+use crate::remote_http::{Resp, fetch, header};
 use crate::remote_write::{self as rw, Known, Outcome, Precondition, Req};
 
 #[derive(Default)]
@@ -41,7 +42,7 @@ fn known(path: &str) -> Known {
     })
 }
 
-async fn send(r: &Req, body: Option<&[u8]>) -> Result<web_sys::Response, String> {
+async fn send(r: &Req, body: Option<&[u8]>) -> Result<Resp, String> {
     let headers: Vec<(&str, &str)> = r.headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
     fetch(r.method, &r.url, &headers, body).await
 }
