@@ -49,6 +49,7 @@ impl VectorcraftApp {
             ui: UiState::default(),
             views,
             services,
+            remote_opening: Vec::new(),
             canvas: CanvasCache {
                 renderer: vectorcraft_render::Renderer::new(),
                 texture: None,

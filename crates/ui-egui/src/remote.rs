@@ -159,6 +159,25 @@ pub(crate) fn accept(app: &mut VectorcraftApp, mode: Mode, path: &str) -> Result
     }
 }
 
+/// Open the file at `path` when it is on a remote mount: start fetching it (the document opens when
+/// the bytes arrive, see [`drain`]) → `{pending: "fetch"}`. `None` for any other path. A second
+/// open of a path whose fetch is still running does nothing.
+pub(crate) fn open_path(app: &mut VectorcraftApp, path: &str) -> Option<Result<Value, String>> {
+    let remote = app.services.remote.as_ref()?;
+    if !(remote.is_remote)(path) {
+        return None;
+    }
+    if app.remote_opening.iter().any(|p| p == path) {
+        return Some(Ok(json!({"pending": "fetch", "path": path})));
+    }
+    app.remote_opening.push(path.to_string());
+    let r = accept(app, Mode::Open, path);
+    if r.is_err() {
+        app.remote_opening.retain(|p| p != path);
+    }
+    Some(r)
+}
+
 /// `path` with the extension of a save format: kept when it names one, else `.vectorcraft`.
 pub(crate) fn save_path(path: &str) -> Result<String, String> {
     let native = fileio::format("vectorcraft").ok_or("no native format")?;
@@ -200,6 +219,9 @@ pub fn drain(app: &mut VectorcraftApp) {
 
 fn fetched(app: &mut VectorcraftApp, path: String, purpose: Purpose, result: Result<Vec<u8>, String>) {
     let name = fileio::file_name(&path);
+    if purpose == Purpose::Open {
+        app.remote_opening.retain(|p| *p != path);
+    }
     match (purpose, result) {
         (Purpose::Open, Err(e)) => crate::io::report_open_error(app, &name, &e),
         (Purpose::Place, Err(e)) => app.status(format!("Couldn't place {name}: {e}")),

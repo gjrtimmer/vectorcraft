@@ -115,6 +115,8 @@ pub struct VectorcraftApp {
     pub ui: UiState,
     pub views: Vec<View>,
     pub services: Services,
+    /// Remote paths opened by path whose fetch has not come back yet ([`remote::open_path`]).
+    pub(crate) remote_opening: Vec<String>,
     pub canvas: CanvasCache,
     pub perf: Perf,
     /// Docking state that lives for the session only.
