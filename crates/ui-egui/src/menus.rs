@@ -65,6 +65,24 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         "{path?} → with a path, document.open's result {index, title, format, warnings, …} (null when a dialog asks first or a library loads)",
     ),
     (
+        "file.openRemote",
+        "Open Remote…",
+        "",
+        "{path?} (web, with remote storage configured) → no path: the dialog to pick a file on the server; with a path: fetch it and open it as a document that saves back to the server",
+    ),
+    (
+        "file.placeRemote",
+        "Place from Remote…",
+        "",
+        "{path?} (web, with remote storage configured) → no path: the dialog to pick a file on the server; with a path: fetch it and open the Place dialog for it (embedded, never linked)",
+    ),
+    (
+        "file.saveAsRemote",
+        "Save As Remote…",
+        "",
+        "{path?} (web, with remote storage configured) → no path: the dialog to pick a folder and a name on a writable mount; with a path: Save As to that path (a name without a save format's extension gets .vectorcraft)",
+    ),
+    (
         "file.save",
         "Save",
         "Cmd+S",
@@ -1294,6 +1312,7 @@ pub fn run_ui_command(app: &mut VectorcraftApp, id: &str, p: &Value) -> Option<R
     }
     if let Some(r) = crate::shortcut_editor::run_command(app, id, p)
         .or_else(|| crate::workspaces::run_command(app, id, p))
+        .or_else(|| crate::remote::command(app, id, p))
         .or_else(|| crate::edit_toolbar::command(app, id, p))
     {
         return Some(r);
@@ -2042,6 +2061,8 @@ fn perspective_grid(app: &VectorcraftApp) -> Option<vectorcraft_tools::distort::
 pub fn dynamic_label(app: &VectorcraftApp, id: &str, label: &str) -> String {
     let v = &app.ui.view;
     match id {
+        "file.open" if crate::remote::available(app) => "Open Local…".into(),
+        "file.place" if crate::remote::available(app) => "Place Local…".into(),
         "view.outline" => if v.outline { "Preview" } else { "Outline" }.into(),
         "window.workspace.reset" => format!("Reset {}", app.ui.workspace),
         "view.edges" => if v.edges { "Hide Edges" } else { "Show Edges" }.into(),
@@ -2221,6 +2242,10 @@ fn hidden_when_disabled(id: &str) -> bool {
         || id.starts_with(crate::dialogs::perspective_presets::SLOT)
 }
 
+/// The File menu's remote entries: left out of the menus unless the host has remote storage
+/// ([`crate::remote`]), which then also names Open and Place as the local ones.
+const REMOTE_COMMANDS: [&str; 3] = ["file.openRemote", "file.placeRemote", "file.saveAsRemote"];
+
 /// Menu items another item stands in for right now: Envelope Distort's Reset with Warp and Reset
 /// with Mesh take the place of Make with Warp and Make with Mesh while an envelope is selected.
 fn swapped_out(app: &VectorcraftApp, id: &str) -> bool {
@@ -2283,7 +2308,7 @@ fn recent_slot<'a>(app: &'a VectorcraftApp, id: &str) -> Option<&'a String> {
 /// another stands in for ([`swapped_out`]).
 pub fn shown_state(app: &VectorcraftApp, id: &str, p: &Value) -> Option<(bool, Option<bool>)> {
     let en = enabled(app, id);
-    if (!en && hidden_when_disabled(id)) || swapped_out(app, id) {
+    if (!en && hidden_when_disabled(id)) || swapped_out(app, id) || (REMOTE_COMMANDS.contains(&id) && !crate::remote::available(app)) {
         return None;
     }
     Some((en, checked(app, id, p)))
@@ -2488,6 +2513,8 @@ pub fn enabled(app: &VectorcraftApp, id: &str) -> bool {
         "type.applyBullets" | "type.applyNumbers" => crate::panels::character::text_style(app).is_some(),
         id if let Some(b) = crate::panels::align::button(id) => enabled(app, b.command()),
         "file.reveal" => app.services.reveal.is_some() && app.session.active().is_some_and(|d| d.path.is_some()),
+        "file.openRemote" => crate::remote::available(app),
+        "file.placeRemote" | "file.saveAsRemote" => crate::remote::available(app) && app.session.active().is_some(),
         "file.cancelExport" | "file.exportInBackground" => app.background.jobs.iter().any(|j| j.progress.is_some() && !j.cancelled()),
         "plugin.cancelRuns" => crate::plugin_runs::any_running(app),
         "plugin.hideRuns" => crate::plugin_runs::any_shown(app),
@@ -2601,6 +2628,7 @@ pub fn menu_tree_named(english_names: bool) -> Vec<(&'static str, Vec<Item>)> {
                 c("New…", "file.newDialog"),
                 c("New from Template…", "file.newFromTemplate"),
                 c("Open…", "file.open"),
+                c("Open Remote…", "file.openRemote"),
                 sub("Open Recent Files", {
                     let mut v: Vec<Item> = RECENT_IDS.iter().map(|id| c("Recent File", id)).collect();
                     v.push(Sep);
@@ -2613,6 +2641,7 @@ pub fn menu_tree_named(english_names: bool) -> Vec<(&'static str, Vec<Item>)> {
                 c("Close All", "file.closeAll"),
                 c("Save", "file.save"),
                 c("Save As…", "file.saveAs"),
+                c("Save As Remote…", "file.saveAsRemote"),
                 c("Save a Copy…", "file.saveCopy"),
                 c("Save as Template…", "file.saveAsTemplate"),
                 c("Save as PDF…", "file.export.pdf"),
@@ -2620,6 +2649,7 @@ pub fn menu_tree_named(english_names: bool) -> Vec<(&'static str, Vec<Item>)> {
                 c("Revert", "file.revert"),
                 Sep,
                 c("Place…", "file.place"),
+                c("Place from Remote…", "file.placeRemote"),
                 Sep,
                 sub(
                     "Export",
@@ -4224,6 +4254,8 @@ pub const CONTEXT_LABELS: &[&str] = &[
 /// The labels [`dynamic_label`] can show in place of an item's own (Show/Hide pairs and the like),
 /// so the catalog tests can insist every one of them is translated.
 pub const DYNAMIC_LABELS: &[&str] = &[
+    "Open Local…",
+    "Place Local…",
     "Preview",
     "Outline",
     "Hide Edges",
