@@ -51,6 +51,7 @@ pub mod plugin_runs;
 pub mod prefs_dialog;
 pub mod print;
 pub mod recovery;
+pub mod remote;
 pub mod render_worker;
 pub mod screen_color;
 mod scrub;

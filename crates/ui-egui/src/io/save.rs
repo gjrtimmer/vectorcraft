@@ -28,8 +28,12 @@ pub(crate) fn write_reporting(app: &mut VectorcraftApp, path: &str, bytes: &[u8]
     r
 }
 
-/// Web: download `bytes` under `path`'s file name; desktop: write them to `path`.
+/// Web: download `bytes` under `path`'s file name, or save them to the server when `path` is on a
+/// remote mount ([`crate::remote`]); desktop: write them to `path`.
 pub(crate) fn write_to(services: &mut Services, path: &str, bytes: &[u8]) -> Result<(), String> {
+    if let Some(remote) = services.remote.as_mut().filter(|r| (r.is_remote)(path)) {
+        return (remote.write)(path, bytes);
+    }
     if let Some(dl) = services.download.as_mut() {
         return dl(&fileio::file_name(path), bytes);
     }
@@ -181,7 +185,7 @@ pub fn remember_view(app: &mut VectorcraftApp) {
 /// save format, or a template format for Save as Template, `mode`). An extension that names
 /// another format (`card.png`, or `card.ait` in Save As) is replaced with `f`'s, and `f`'s is
 /// added to any other path (`notes.v2` becomes `notes.v2.vectorcraft`).
-fn with_save_extension(path: &str, f: &Format, mode: SaveMode) -> String {
+pub(crate) fn with_save_extension(path: &str, f: &Format, mode: SaveMode) -> String {
     let formats = if mode == SaveMode::Template { TEMPLATE_FORMATS } else { SAVE_FORMATS };
     if fileio::format_for_name(path).is_some_and(|g| !formats.contains(&g.id)) {
         return std::path::Path::new(path).with_extension(f.extensions[0]).to_string_lossy().into_owned();
