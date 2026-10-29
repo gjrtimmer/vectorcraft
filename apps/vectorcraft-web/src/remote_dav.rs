@@ -38,14 +38,17 @@ pub struct Child {
     pub entry: DavEntry,
 }
 
+/// Is `n` the DAV: element `local`?
 fn is_dav(n: &roxmltree::Node, local: &str) -> bool {
     n.is_element() && n.tag_name().name() == local && n.tag_name().namespace() == Some("DAV:")
 }
 
+/// The first DAV: child element `local` of `n`.
 fn child<'a, 'i>(n: roxmltree::Node<'a, 'i>, local: &str) -> Option<roxmltree::Node<'a, 'i>> {
     n.children().find(|c| is_dav(c, local))
 }
 
+/// The trimmed text of an element, `None` when empty or absent.
 fn text(n: Option<roxmltree::Node>) -> Option<String> {
     n.and_then(|n| n.text()).map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
 }
@@ -121,6 +124,7 @@ pub struct ContentRange {
     pub total: Option<u64>,
 }
 
+/// Parse a `Content-Range: bytes a-b/total` header.
 pub fn parse_content_range(h: &str) -> Option<ContentRange> {
     let rest = h.trim().strip_prefix("bytes")?.trim_start();
     let (range, total) = rest.split_once('/')?;

@@ -87,6 +87,7 @@ pub enum Mode {
 }
 
 impl Mode {
+    /// The id the dialog and the commands use for this mode.
     pub fn id(self) -> &'static str {
         match self {
             Mode::Open => "open",
@@ -95,6 +96,7 @@ impl Mode {
         }
     }
 
+    /// The mode for a dialog id (anything unknown is Open).
     pub fn of(id: &str) -> Mode {
         match id {
             "place" => Mode::Place,
@@ -121,6 +123,7 @@ pub fn command(app: &mut VectorcraftApp, id: &str, p: &Value) -> Option<Result<V
     Some(run(app, mode, p.get("path").and_then(Value::as_str)))
 }
 
+/// The File commands: open the dialog, or act on `path` at once.
 fn run(app: &mut VectorcraftApp, mode: Mode, path: Option<&str>) -> Result<Value, String> {
     if !available(app) {
         return Err("remote storage is not configured".into());
@@ -217,6 +220,7 @@ pub fn drain(app: &mut VectorcraftApp) {
     }
 }
 
+/// A fetched file: open it, place it, or report why it could not be read.
 fn fetched(app: &mut VectorcraftApp, path: String, purpose: Purpose, result: Result<Vec<u8>, String>) {
     let name = fileio::file_name(&path);
     if purpose == Purpose::Open {
@@ -239,6 +243,7 @@ fn fetched(app: &mut VectorcraftApp, path: String, purpose: Purpose, result: Res
     }
 }
 
+/// An upload that did not reach the server: its documents are unsaved again and the user is told.
 fn save_failed(app: &mut VectorcraftApp, path: &str, message: &str) {
     let uids: Vec<u64> = app.session.documents().iter().filter(|d| d.path.as_deref() == Some(path)).map(|d| d.uid).collect();
     for uid in uids {

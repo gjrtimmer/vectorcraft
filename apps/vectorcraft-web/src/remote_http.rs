@@ -13,6 +13,7 @@ use wasm_bindgen_futures::JsFuture;
 use crate::remote_dav;
 use crate::remote_util::{timeout_for, timeout_message};
 
+/// A JavaScript error value as text.
 pub(crate) fn js_err(e: wasm_bindgen::JsValue) -> String {
     format!("{e:?}")
 }
@@ -26,6 +27,7 @@ struct Deadline {
 }
 
 impl Deadline {
+    /// Start the timer that aborts the request through `ctl` after `limit`.
     fn arm(ctl: &web_sys::AbortController, limit: Duration) -> Result<Deadline, String> {
         let win = web_sys::window().ok_or("no window")?;
         let fired = Rc::new(Cell::new(false));
@@ -41,6 +43,7 @@ impl Deadline {
 }
 
 impl Drop for Deadline {
+    /// Clear the timer once the answer is done with.
     fn drop(&mut self) {
         self.win.clear_timeout_with_handle(self.handle);
     }
@@ -56,6 +59,7 @@ pub(crate) struct Resp {
 
 impl Deref for Resp {
     type Target = web_sys::Response;
+    /// The underlying `Response`.
     fn deref(&self) -> &web_sys::Response {
         &self.r
     }
@@ -72,6 +76,7 @@ pub(crate) async fn fetch(method: &str, url: &str, headers: &[(&str, &str)], bod
     fetch_within(method, url, headers, body, timeout_for(method)).await
 }
 
+/// A [`fetch`] with an explicit time limit (the config file's is shorter than a transfer's).
 pub(crate) async fn fetch_within(method: &str, url: &str, headers: &[(&str, &str)], body: Option<&[u8]>, limit: Duration) -> Result<Resp, String> {
     let init = web_sys::RequestInit::new();
     init.set_method(method);
@@ -100,6 +105,7 @@ pub(crate) async fn fetch_within(method: &str, url: &str, headers: &[(&str, &str
     Ok(Resp { r, deadline, method: method.to_string(), limit })
 }
 
+/// One response header, `None` when absent.
 pub(crate) fn header(r: &web_sys::Response, name: &str) -> Option<String> {
     r.headers().get(name).ok().flatten()
 }
