@@ -50,6 +50,7 @@ impl VectorcraftApp {
             views,
             services,
             remote_opening: Vec::new(),
+            remote_saving: Vec::new(),
             canvas: CanvasCache {
                 renderer: vectorcraft_render::Renderer::new(),
                 texture: None,

@@ -230,7 +230,8 @@ pub fn storage(ctx: &egui::Context, inbox: &RemoteInbox) -> Option<RemoteStorage
         is_remote: Box::new(is_remote),
         list: Box::new(list),
         fetch: Box::new(move |path, purpose| start_fetch(path, purpose, &fetch_inbox)),
-        write: Box::new(move |path, data| crate::remote_upload::write(path, data, &write_inbox)),
+        write: Box::new(move |path, data, new_file| crate::remote_upload::write(path, data, new_file, &write_inbox)),
         inbox: inbox.clone(),
+        new_files: Default::default(),
     })
 }

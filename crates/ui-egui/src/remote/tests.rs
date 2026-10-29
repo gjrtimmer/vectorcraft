@@ -17,6 +17,8 @@ use crate::{Services, VectorcraftApp, menus};
 struct Log {
     fetched: Vec<(String, Purpose)>,
     written: Vec<(String, Vec<u8>)>,
+    /// For each write: was it a save that creates a file?
+    created: Vec<bool>,
     downloads: Vec<String>,
 }
 
@@ -46,14 +48,16 @@ fn host(log: &Rc<RefCell<Log>>) -> (RemoteStorage, RemoteInbox) {
             _ => Ok(vec![]),
         }),
         fetch: Box::new(move |p, purpose| fetch_log.borrow_mut().fetched.push((p.to_string(), purpose))),
-        write: Box::new(move |p, b| {
+        write: Box::new(move |p, b, new_file| {
             if p.starts_with("/ro/") {
                 return Err("Archive is read-only".into());
             }
             write_log.borrow_mut().written.push((p.to_string(), b.to_vec()));
+            write_log.borrow_mut().created.push(new_file);
             Ok(())
         }),
         inbox: inbox.clone(),
+        new_files: Default::default(),
     };
     (remote, inbox)
 }
@@ -327,4 +331,66 @@ fn other_paths_still_read_locally() {
     let e = crate::io::open_file(&mut app, "/elsewhere/a.vectorcraft", false).unwrap_err();
     assert!(!e.is_empty());
     assert!(log.borrow().fetched.is_empty());
+}
+
+/// A save to the server leaves the document unsaved until the server confirms it, and an edit made
+/// meanwhile stays unsaved after it.
+#[test]
+fn a_started_save_counts_as_saved_only_once_the_server_confirms_it() {
+    let (mut app, inbox, log) = remote_app();
+    app.run("file.new", json!({"width": 100, "height": 100})).unwrap();
+    app.run("file.saveAsRemote", json!({"path": "/rw/new"})).unwrap();
+    assert_eq!(log.borrow().written.len(), 1);
+    assert!(app.session.active().unwrap().is_dirty(), "the upload is not confirmed yet: closing must ask");
+    inbox.lock().unwrap().push(RemoteEvent::Saved { path: "/rw/new.vectorcraft".into() });
+    crate::remote::drain(&mut app);
+    assert!(!app.session.active().unwrap().is_dirty(), "confirmed");
+
+    app.run("file.save", json!({})).unwrap();
+    assert!(app.session.active().unwrap().is_dirty());
+    app.run("shape.rectangle", json!({"x": 1, "y": 1, "width": 5, "height": 5})).unwrap();
+    inbox.lock().unwrap().push(RemoteEvent::Saved { path: "/rw/new.vectorcraft".into() });
+    crate::remote::drain(&mut app);
+    assert!(app.session.active().unwrap().is_dirty(), "edits made while the upload ran stay unsaved");
+    assert!(app.remote_saving.is_empty());
+}
+
+/// A failed upload leaves the document unsaved and a later confirmation is not applied to it.
+#[test]
+fn a_failed_upload_stays_unsaved() {
+    let (mut app, inbox, _) = remote_app();
+    app.run("file.new", json!({"width": 100, "height": 100})).unwrap();
+    app.run("file.saveAsRemote", json!({"path": "/rw/new"})).unwrap();
+    inbox.lock().unwrap().push(RemoteEvent::SaveFailed { path: "/rw/new.vectorcraft".into(), message: "no".into() });
+    crate::remote::drain(&mut app);
+    assert!(app.session.active().unwrap().is_dirty());
+}
+
+/// A Save As to another path creates a file; saving the document's own path does not.
+#[test]
+fn a_save_as_to_another_path_creates_a_file() {
+    let (mut app, _, log) = remote_app();
+    app.run("file.new", json!({"width": 100, "height": 100})).unwrap();
+    app.run("file.saveAsRemote", json!({"path": "/rw/new"})).unwrap();
+    app.run("file.save", json!({})).unwrap();
+    app.run("file.saveAsRemote", json!({"path": "/rw/new"})).unwrap();
+    app.run("file.saveAsRemote", json!({"path": "/rw/other"})).unwrap();
+    assert_eq!(log.borrow().created, [true, false, false, true]);
+}
+
+/// A file fetched for Place waits while another dialog is open, and then opens the Place dialog.
+#[test]
+fn a_fetched_place_file_waits_for_the_open_dialog() {
+    let (mut app, inbox, _) = remote_app();
+    app.run("file.new", json!({})).unwrap();
+    app.run("file.placeRemote", json!({"path": "/rw/b.svg"})).unwrap();
+    let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>"#.to_vec();
+    app.ui.dialog = Some(crate::state::Dialog::new("other", json!({"keep": 1})));
+    inbox.lock().unwrap().push(RemoteEvent::Fetched { path: "/rw/b.svg".into(), purpose: Purpose::Place, result: Ok(svg) });
+    crate::remote::drain(&mut app);
+    crate::place::drain(&mut app);
+    assert_eq!(app.ui.dialog.as_ref().unwrap().kind, "other", "the open dialog is not replaced");
+    app.ui.dialog = None;
+    crate::place::drain(&mut app);
+    assert_eq!(app.ui.dialog.as_ref().expect("the Place dialog opens").kind, crate::dialogs::place::KIND);
 }
