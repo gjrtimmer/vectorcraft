@@ -23,3 +23,27 @@ pub fn timeout_for(method: &str) -> Duration {
 pub fn timeout_message(method: &str, limit: Duration) -> String {
     format!("the server did not finish the {method} request within {} s", limit.as_secs())
 }
+
+/// A retried listing keeps showing its last error for this long (seconds) before it says
+/// "Loading…": a retry that fails at once would otherwise flash between the two.
+pub const LOADING_GRACE_S: f64 = 1.0;
+
+/// What the dialog shows for a folder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListingView {
+    Entries,
+    Error,
+    Loading,
+}
+
+/// `loading_for`: how long (seconds) the request in flight has been running, `None` when none is.
+/// The last error stays up until a retry has been running for [`LOADING_GRACE_S`].
+pub fn listing_view(has_entries: bool, has_error: bool, loading_for: Option<f64>) -> ListingView {
+    if has_entries {
+        ListingView::Entries
+    } else if has_error && loading_for.is_none_or(|t| t < LOADING_GRACE_S) {
+        ListingView::Error
+    } else {
+        ListingView::Loading
+    }
+}

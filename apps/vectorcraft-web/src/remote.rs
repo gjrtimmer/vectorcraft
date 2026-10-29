@@ -16,7 +16,7 @@ use vectorcraft_ui_egui::remote::{Purpose, RemoteEntry, RemoteEvent, RemoteInbox
 use crate::remote_config::{self, Config};
 use crate::remote_dav::{self, Child};
 use crate::remote_http::{fetch, fetch_within, header, read_body};
-use crate::remote_util as util;
+use crate::remote_util::{self as util, ListingView};
 
 /// A failed listing is not asked for again for this long (seconds).
 const ERROR_RETRY_S: f64 = 5.0;
@@ -31,7 +31,8 @@ struct DirState {
     fetched: f64,
     /// Whether the listing was handed out since it was fetched (a TTL of 0 refetches after that).
     shown: bool,
-    loading: bool,
+    /// When the request in flight started.
+    loading: Option<f64>,
     error: Option<(String, f64)>,
 }
 
@@ -106,7 +107,7 @@ fn record_dir(dir: &str, res: Result<Vec<Child>, String>) {
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         let st = s.dirs.entry(dir.to_string()).or_default();
-        st.loading = false;
+        st.loading = None;
         match res {
             Ok(children) => {
                 st.error = None;
@@ -120,7 +121,15 @@ fn record_dir(dir: &str, res: Result<Vec<Child>, String>) {
     });
 }
 
+fn repaint_after(d: std::time::Duration) {
+    if let Some(ctx) = STATE.with(|s| s.borrow().ctx.clone()) {
+        ctx.request_repaint_after(d);
+    }
+}
+
 fn start_listing(dir: String) {
+    // Look again when the last error may give way to "Loading…".
+    repaint_after(std::time::Duration::from_secs_f64(util::LOADING_GRACE_S + 0.05));
     wasm_bindgen_futures::spawn_local(async move {
         let res = propfind(&dir).await;
         record_dir(&dir, res);
@@ -142,15 +151,16 @@ fn list(dir: &str) -> io::Result<Vec<RemoteEntry>> {
         let st = s.dirs.entry(dir.clone()).or_default();
         // A listing that was not shown yet is always fresh, so a TTL of 0 does not refetch in a loop.
         let fresh = st.entries.is_some() && (!st.shown || now - st.fetched < ttl);
-        let blocked = st.loading || st.error.as_ref().is_some_and(|(_, at)| now - at < ERROR_RETRY_S);
+        let blocked = st.loading.is_some() || st.error.as_ref().is_some_and(|(_, at)| now - at < ERROR_RETRY_S);
         let start = !fresh && !blocked;
         if start {
-            st.loading = true;
+            st.loading = Some(now);
         }
         st.shown |= st.entries.is_some();
-        let result = match (&st.entries, &st.error) {
-            (Some(e), _) => Ok(e.clone()),
-            (None, Some((msg, at))) if now - at < ERROR_RETRY_S => Err(io::Error::other(msg.clone())),
+        // The last error stays up until the retry has run for a moment (no error/Loading flicker).
+        let result = match (util::listing_view(st.entries.is_some(), st.error.is_some(), st.loading.map(|t| now - t)), &st.entries, &st.error) {
+            (ListingView::Entries, Some(e), _) => Ok(e.clone()),
+            (ListingView::Error, _, Some((msg, _))) => Err(io::Error::other(msg.clone())),
             _ => Err(io::Error::new(io::ErrorKind::WouldBlock, "Loading…")),
         };
         (result, start)

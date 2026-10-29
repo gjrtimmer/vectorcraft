@@ -16,3 +16,14 @@ fn limits_follow_the_method() {
     let msg = timeout_message("PROPFIND", Duration::from_secs(20));
     assert!(msg.contains("PROPFIND") && msg.contains("20 s"), "{msg}");
 }
+
+#[test]
+fn a_listing_keeps_its_error_until_the_retry_runs_a_while() {
+    use crate::remote_util::{LOADING_GRACE_S, ListingView::*, listing_view};
+    assert_eq!(listing_view(true, true, Some(30.0)), Entries);
+    assert_eq!(listing_view(false, true, None), Error);
+    assert_eq!(listing_view(false, true, Some(0.0)), Error);
+    assert_eq!(listing_view(false, true, Some(LOADING_GRACE_S + 0.1)), Loading);
+    assert_eq!(listing_view(false, false, None), Loading);
+    assert_eq!(listing_view(false, false, Some(0.0)), Loading);
+}
