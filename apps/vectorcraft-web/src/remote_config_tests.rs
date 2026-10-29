@@ -53,7 +53,6 @@ fn bad_configs_are_refused() {
         r#"{"remote":{"mounts":[{"path":"data","url":"dav/"}]}}"#,
         r#"{"remote":{"mounts":[{"path":"/a/../b","url":"dav/"}]}}"#,
         r#"{"remote":{"mounts":[{"path":"/a//b","url":"dav/"}]}}"#,
-        r#"{"remote":{"mounts":[{"path":"/files","url":"dav/"}]}}"#,
         r#"{"remote":{"mounts":[{"path":"/a","url":"dav/"},{"path":"/a/b","url":"dav2/"}]}}"#,
         r#"{"remote":{"mounts":[{"path":"/a","url":"dav/","name":""}]}}"#,
     ] {
@@ -123,4 +122,32 @@ fn parent_of_paths() {
     assert_eq!(parent("/data/a/b.mp4"), Some("/data/a"));
     assert_eq!(parent("/data/a/"), Some("/data"));
     assert_eq!(parent("/data"), None);
+}
+
+#[test]
+fn list_cache_seconds_defaults_is_read_and_clamped() {
+    let with = |extra: &str| cfg(&format!(r#"{{"remote":{{"mounts":[{{"path":"/data","url":"dav/"}}]{extra}}}}}"#)).unwrap().list_cache_s;
+    assert_eq!(with(""), 15.0);
+    assert_eq!(with(r#","listCacheSeconds":60"#), 60.0);
+    assert_eq!(with(r#","listCacheSeconds":0"#), 0.0);
+    assert_eq!(with(r#","listCacheSeconds":2.5"#), 2.5);
+    assert_eq!(with(r#","listCacheSeconds":-5"#), 0.0);
+    assert_eq!(with(r#","listCacheSeconds":100000"#), 3600.0);
+    for wrong in [r#""60""#, "true", "null", "[1]", r#"{"a":1}"#] {
+        assert_eq!(with(&format!(r#","listCacheSeconds":{wrong}"#)), 15.0, "{wrong} keeps the default");
+    }
+}
+
+#[test]
+fn reserved_roots_are_refused_and_other_roots_accepted() {
+    use crate::remote_roots::RESERVED_ROOTS;
+    for root in RESERVED_ROOTS {
+        for path in [format!("/{root}"), format!("/{root}/sub")] {
+            let j = format!(r#"{{"remote":{{"mounts":[{{"path":{},"url":"dav/"}}]}}}}"#, serde_json::json!(path));
+            assert!(cfg(&j).is_err(), "{path} shadows a built-in folder");
+        }
+    }
+    // VectorCraft has no virtual roots of its own, so any mount path is free.
+    assert!(cfg(r#"{"remote":{"mounts":[{"path":"/media","url":"dav/"}]}}"#).is_ok());
+    assert!(cfg(r#"{"remote":{"mounts":[{"path":"/files","url":"dav/"}]}}"#).is_ok());
 }

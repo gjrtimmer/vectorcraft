@@ -54,10 +54,10 @@ How the web shell (`apps/vectorcraft-web/src/web.rs`) differs from desktop:
 The web build can open, place and save files on a WebDAV server, so a team or a self-hosted setup keeps its documents on a server instead of in downloads. It is off unless the site serves a config file:
 
 ```json
-{"remote": {"mounts": [{"path": "/data", "url": "dav/", "name": "Server", "writable": true}]}}
+{"remote": {"mounts": [{"path": "/data", "url": "dav/", "name": "Server", "writable": true}], "listCacheSeconds": 15}}
 ```
 
-Save it as `vectorcraft-config.json` beside `index.html`. Each mount maps a virtual path (`path`, what documents remember) to a WebDAV collection on the **same origin** as the page (`url`, relative to the page or absolute; other origins are refused). `name` is what the dialog shows, `writable` defaults to `false`. A missing or invalid file leaves the web build exactly as it was: the File menu has no remote entries.
+Save it as `vectorcraft-config.json` beside `index.html`. Each mount maps a virtual path (`path`, what documents remember) to a WebDAV collection on the **same origin** as the page (`url`, relative to the page or absolute; other origins are refused). `name` is what the dialog shows, `writable` defaults to `false`. `remote.listCacheSeconds` (optional, next to `mounts`) is how long a folder listing is reused before the server is asked again: seconds, default `15`, clamped to 0 to 3600, `0` revalidates every time the folder is refreshed, anything but a number keeps the default. A missing or invalid file leaves the web build exactly as it was: the File menu has no remote entries.
 
 With at least one mount, File gains **Open Remote…**, **Place from Remote…** and **Save As Remote…** (Open… and Place… become Open Local… and Place Local…). There are no default shortcuts. All three are commands (`file.openRemote`, `file.placeRemote`, `file.saveAsRemote`, each takes an optional `{path}`).
 
@@ -68,7 +68,24 @@ With at least one mount, File gains **Open Remote…**, **Place from Remote…**
 
 Everything from the config, the listings and the server's answers is untrusted: paths with `..`, empty segments, backslashes or control characters never map to a URL, a `href` outside the mount is dropped, and listing and body sizes are capped. Requests use `mode: same-origin`, so a redirect to another origin fails.
 
-To try it, serve `dist/web` with any WebDAV server that answers PROPFIND, PUT, MOVE, HEAD and DELETE on the same origin as the pages, for example nginx with `ngx_http_dav_module` and `dav_methods PUT DELETE MKCOL COPY MOVE; dav_ext_methods PROPFIND;` on `location /dav/`, or `rclone serve webdav` behind a reverse proxy that also serves the static files. The pure parts (`remote_config.rs`, `remote_dav.rs`, `remote_write.rs`) are tested natively: `cargo test -p vectorcraft-web`.
+To try it, serve `dist/web` with a WebDAV server that answers PROPFIND, PUT, MOVE, HEAD and DELETE on the same origin as the pages. For example nginx in front of `rclone serve webdav`:
+
+```nginx
+location /dav/ {
+    proxy_pass http://127.0.0.1:8080;      # no URI here: the /dav prefix is kept
+    proxy_set_header Host $http_host;      # the Destination of a MOVE names this host
+    client_max_body_size 0;                # saved documents, no limit
+    proxy_request_buffering off;
+}
+```
+
+with `rclone serve webdav <root> --addr 127.0.0.1:8080 --baseurl /dav` (add `--read-only` for a read-only mount); nginx with `ngx_http_dav_module` (`dav_methods PUT DELETE MKCOL COPY MOVE; dav_ext_methods PROPFIND;` on `location /dav/`) works too. Three rules keep saving working:
+
+- The proxy must not strip the location prefix: `proxy_pass http://127.0.0.1:8080;` has no trailing `/` or path. With `proxy_pass http://...:8080/;` the server sees paths without the prefix, but the `Destination` header of the `MOVE` that finishes a save still carries it, so saving fails.
+- `rclone --baseurl` equals the location prefix (`/dav`), and the mount's `url` is that same prefix, relative to the page (`dav/`) or absolute (`/dav/`).
+- `--read-only` on the server goes with `"writable": false` in the config, and the other way round.
+
+The pure parts (`remote_config.rs`, `remote_dav.rs`, `remote_write.rs`) are tested natively: `cargo test -p vectorcraft-web`.
 
 ## Desktop graphics processor
 

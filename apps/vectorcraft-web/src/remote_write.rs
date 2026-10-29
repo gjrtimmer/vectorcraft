@@ -59,7 +59,7 @@ pub enum Outcome {
     Failed(String),
 }
 
-/// `/data/a/x.fcproj` → `/data/a/x.fcproj.part`, in the same folder.
+/// `/data/a/x.vectorcraft` → `/data/a/x.vectorcraft.part`, in the same folder.
 pub fn part_path(path: &str) -> Result<String, String> {
     if path.ends_with('/') || path.rsplit('/').next().is_none_or(str::is_empty) {
         return Err(format!("{path}: not a file path"));
