@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use vectorcraft_ui_egui::remote::{RemoteEvent, RemoteInbox};
 
 use crate::remote::cfg_and_origin;
-use crate::remote_http::{Resp, fetch, header};
+use crate::remote_http::{Resp, fetch, header, read_body};
 use crate::remote_write::{self as rw, Known, Outcome, Precondition, Req};
 
 #[derive(Default)]
@@ -135,6 +135,17 @@ async fn upload(path: &str, bytes: &[u8], new_file: bool) -> Outcome {
     outcome
 }
 
+/// The saved version when the server gave the moved target a new ETag: read the target back (at most
+/// [`rw::MAX_UPLOAD`] bytes) and bind its ETag only if its bytes are the ones uploaded. Any failure
+/// leaves the version unbound (the next save is then a conflict or Save As, never an overwrite).
+async fn verify_by_content(cfg: &crate::remote_config::Config, path: &str, bytes: &[u8]) -> rw::SavedVersion {
+    let Ok(get) = rw::get_target(cfg, path) else { return rw::SavedVersion::Unbound };
+    let Ok(r) = send(&get, None).await else { return rw::SavedVersion::Unbound };
+    let (status, etag) = (r.status(), header(&r, "etag"));
+    let body = if status == 200 { read_body(&r, rw::MAX_UPLOAD).await.ok() } else { None };
+    rw::verify_saved(bytes, body.as_deref().map(|b| (status, etag.as_deref(), b)))
+}
+
 /// The requests of one save, in order; the first that fails ends it.
 async fn upload_steps(cfg: &crate::remote_config::Config, origin: &str, path: &str, token: &str, bytes: &[u8], new_file: bool) -> Outcome {
     let step = Outcome::Failed;
@@ -187,10 +198,14 @@ async fn upload_steps(cfg: &crate::remote_config::Config, origin: &str, path: &s
             Ok(r) if r.status() == 200 => Some(header(&r, "etag")),
             _ => None,
         };
-        match rw::saved_version(moved_etag.as_deref(), part_etag.as_deref(), after.as_ref().map(Option::as_deref)) {
+        let mut version = rw::saved_version(moved_etag.as_deref(), part_etag.as_deref(), after.as_ref().map(Option::as_deref));
+        if version == rw::SavedVersion::Verify {
+            version = verify_by_content(cfg, path, bytes).await;
+        }
+        match version {
             rw::SavedVersion::Etag(e) => note_opened(path, Some(e)),
             rw::SavedVersion::NoEtag => note_opened(path, None),
-            rw::SavedVersion::Unbound => forget_version(path),
+            rw::SavedVersion::Unbound | rw::SavedVersion::Verify => forget_version(path),
         }
         crate::remote::forget(path);
     }
