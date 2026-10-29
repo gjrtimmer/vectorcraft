@@ -19,7 +19,9 @@ struct Uploads {
     /// The ETag each path had when this session opened or last saved it (`None`: the server sent none).
     seen: HashMap<String, Option<String>>,
     running: HashSet<String>,
-    waiting: HashMap<String, Vec<u8>>,
+    /// The save waiting behind the running one: its bytes, and whether it creates a file (a Save As
+    /// to a new name, see [`write`]).
+    waiting: HashMap<String, (Vec<u8>, bool)>,
 }
 
 thread_local! {
@@ -34,8 +36,19 @@ pub fn note_opened(path: &str, etag: Option<String>) {
     UPLOADS.with(|u| u.borrow_mut().seen.insert(path.to_string(), etag));
 }
 
-/// What this session knows about the version of `path` on the server.
-fn known(path: &str) -> Known {
+/// Forget the version of `path`: it cannot be tied to what this session wrote, so the next save is
+/// a conflict or Save As.
+fn forget_version(path: &str) {
+    UPLOADS.with(|u| u.borrow_mut().seen.remove(path));
+}
+
+/// What this session knows about the version of `path` on the server. A save that creates a file
+/// (`new_file`) knows nothing of it, whatever was opened under that name before: an existing
+/// target is then refused, never replaced.
+fn known(path: &str, new_file: bool) -> Known {
+    if new_file {
+        return Known::Unknown;
+    }
     UPLOADS.with(|u| match u.borrow().seen.get(path) {
         Some(Some(e)) => Known::Etag(e.clone()),
         Some(None) => Known::NoEtag,
@@ -50,8 +63,9 @@ async fn send(r: &Req, body: Option<&[u8]>) -> Result<Resp, String> {
 }
 
 /// The app's write to a path on a mount: a read-only mount refuses; otherwise the upload starts
-/// and the write succeeds.
-pub fn write(path: &str, data: &[u8], inbox: &RemoteInbox) -> Result<(), String> {
+/// and the write succeeds. `new_file`: a Save As to a path other than the document's own, which
+/// must not replace a file that is there.
+pub fn write(path: &str, data: &[u8], new_file: bool, inbox: &RemoteInbox) -> Result<(), String> {
     let (cfg, _) = cfg_and_origin()?;
     rw::check_writable(&cfg, path)?;
     if data.len() > rw::MAX_UPLOAD {
@@ -59,15 +73,19 @@ pub fn write(path: &str, data: &[u8], inbox: &RemoteInbox) -> Result<(), String>
     }
     let start = UPLOADS.with(|u| {
         let mut u = u.borrow_mut();
-        u.waiting.insert(path.to_string(), data.to_vec());
+        // a save queued behind one that creates the file still creates it
+        let new_file = new_file || u.waiting.get(path).is_some_and(|(_, n)| *n);
+        u.waiting.insert(path.to_string(), (data.to_vec(), new_file));
         u.running.insert(path.to_string())
     });
     if start {
         let (path, inbox) = (path.to_string(), inbox.clone());
         wasm_bindgen_futures::spawn_local(async move {
-            while let Some(bytes) = UPLOADS.with(|u| u.borrow_mut().waiting.remove(&path)) {
-                let outcome = upload(&path, &bytes).await;
-                report(&path, &outcome, &inbox);
+            while let Some((bytes, new_file)) = UPLOADS.with(|u| u.borrow_mut().waiting.remove(&path)) {
+                let outcome = upload(&path, &bytes, new_file).await;
+                // Saved is reported once nothing newer waits: that upload holds the newest bytes
+                let newest = UPLOADS.with(|u| !u.borrow().waiting.contains_key(&path));
+                report(&path, &outcome, newest, &inbox);
             }
             UPLOADS.with(|u| u.borrow_mut().running.remove(&path));
         });
@@ -75,13 +93,19 @@ pub fn write(path: &str, data: &[u8], inbox: &RemoteInbox) -> Result<(), String>
     Ok(())
 }
 
-/// A failed save leaves the document unsaved and says why.
-fn report(path: &str, outcome: &Outcome, inbox: &RemoteInbox) {
+/// A failed save leaves the document unsaved and says why; the last of the saves made meanwhile
+/// that reached the server (`newest`) lets the app count the document as saved.
+fn report(path: &str, outcome: &Outcome, newest: bool, inbox: &RemoteInbox) {
     let message = match outcome {
         Outcome::Conflict => CONFLICT.to_string(),
         other => match rw::failure_message(other) {
             Some(m) => m,
-            None => return,
+            None => {
+                if newest {
+                    inbox.lock().unwrap_or_else(|e| e.into_inner()).push(RemoteEvent::Saved { path: path.to_string() });
+                }
+                return;
+            }
         },
     };
     log::warn!("saving {path}: {message}");
@@ -95,13 +119,13 @@ fn new_token() -> String {
 }
 
 /// Upload `bytes` to this upload's own `.part` file, check the target, move the upload over it.
-async fn upload(path: &str, bytes: &[u8]) -> Outcome {
+async fn upload(path: &str, bytes: &[u8], new_file: bool) -> Outcome {
     let (cfg, origin) = match cfg_and_origin() {
         Ok(v) => v,
         Err(e) => return Outcome::Failed(e),
     };
     let token = new_token();
-    let outcome = upload_steps(&cfg, &origin, path, &token, bytes).await;
+    let outcome = upload_steps(&cfg, &origin, path, &token, bytes, new_file).await;
     if outcome != Outcome::Saved {
         // best effort: the .part file is of no use
         if let Ok(d) = rw::delete_part(&cfg, path, &token) {
@@ -112,26 +136,34 @@ async fn upload(path: &str, bytes: &[u8]) -> Outcome {
 }
 
 /// The requests of one save, in order; the first that fails ends it.
-async fn upload_steps(cfg: &crate::remote_config::Config, origin: &str, path: &str, token: &str, bytes: &[u8]) -> Outcome {
+async fn upload_steps(cfg: &crate::remote_config::Config, origin: &str, path: &str, token: &str, bytes: &[u8], new_file: bool) -> Outcome {
     let step = Outcome::Failed;
     let put = match rw::put_part(cfg, path, token) {
         Ok(r) => r,
         Err(e) => return step(e),
     };
-    match send(&put, Some(bytes)).await {
+    let mut part_etag = match send(&put, Some(bytes)).await {
         Ok(r) => {
             if let Err(e) = rw::classify_put(r.status()) {
                 return step(e);
             }
+            header(&r, "etag")
         }
         Err(e) => return step(e),
+    };
+    // the upload's own version, to tie the target's to it after the move
+    if part_etag.is_none() {
+        part_etag = match rw::head_part(cfg, path, token) {
+            Ok(h) => send(&h, None).await.ok().filter(|r| r.status() == 200).and_then(|r| header(&r, "etag")),
+            Err(e) => return step(e),
+        };
     }
     let head = match rw::head_target(cfg, path) {
         Ok(r) => r,
         Err(e) => return step(e),
     };
     let overwrite = match send(&head, None).await {
-        Ok(r) => match rw::precondition(&known(path), r.status(), header(&r, "etag").as_deref()) {
+        Ok(r) => match rw::precondition(&known(path, new_file), r.status(), header(&r, "etag").as_deref()) {
             Precondition::Proceed { overwrite } => overwrite,
             Precondition::Conflict => return Outcome::Conflict,
             Precondition::Exists => return Outcome::Exists,
@@ -143,17 +175,22 @@ async fn upload_steps(cfg: &crate::remote_config::Config, origin: &str, path: &s
         Ok(r) => r,
         Err(e) => return step(e),
     };
-    let outcome = match send(&mv, None).await {
-        Ok(r) => rw::classify_move(r.status()),
+    let (outcome, moved_etag) = match send(&mv, None).await {
+        Ok(r) => (rw::classify_move(r.status()), header(&r, "etag")),
         Err(e) => return step(e),
     };
     if outcome == Outcome::Saved {
-        // the new version is what this session now expects; listings are stale
-        let etag = match send(&head, None).await {
+        // The version this save made: the move's own, else the target's when it is the upload's
+        // (see `saved_version`). A follow-up HEAD alone could show another writer's version.
+        let after = match send(&head, None).await {
             Ok(r) if r.status() == 200 => header(&r, "etag"),
             _ => None,
         };
-        note_opened(path, etag);
+        match rw::saved_version(moved_etag.as_deref(), part_etag.as_deref(), after.as_deref()) {
+            rw::SavedVersion::Etag(e) => note_opened(path, Some(e)),
+            rw::SavedVersion::NoEtag => note_opened(path, None),
+            rw::SavedVersion::Unbound => forget_version(path),
+        }
         crate::remote::forget(path);
     }
     outcome

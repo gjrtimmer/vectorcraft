@@ -471,6 +471,8 @@ pub struct VectorcraftApp {
     pub services: Services,
     /// Remote paths opened by path whose fetch has not come back yet ([`remote::open_path`]).
     pub(crate) remote_opening: Vec<String>,
+    /// Saves to a remote mount the server has not confirmed yet ([`remote::hold_unsaved`]).
+    pub(crate) remote_saving: Vec<remote::Unconfirmed>,
     pub canvas: CanvasCache,
     pub perf: Perf,
     /// Docking state that lives for the session only.
@@ -768,6 +770,7 @@ impl VectorcraftApp {
             views,
             services,
             remote_opening: Vec::new(),
+            remote_saving: Vec::new(),
             canvas: CanvasCache {
                 renderer: vectorcraft_render::Renderer::new(),
                 texture: None,

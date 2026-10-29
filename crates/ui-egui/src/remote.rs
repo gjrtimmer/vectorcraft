@@ -11,10 +11,12 @@
 //! server ([`crate::io::write_to`]). A file placed from a mount is embedded: a link to a remote
 //! path would not resolve when the document is opened again.
 
+use std::collections::HashSet;
 use std::io;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
+use vectorcraft_doc::Document;
 use vectorcraft_engine::cmd::fileio::{self, SAVE_FORMATS, SaveMode};
 
 use crate::VectorcraftApp;
@@ -52,6 +54,9 @@ pub enum RemoteEvent {
     Fetched { path: String, purpose: Purpose, result: Result<Vec<u8>, String> },
     /// An upload that [`RemoteStorage::write`] started did not reach the server.
     SaveFailed { path: String, message: String },
+    /// The newest upload [`RemoteStorage::write`] started for `path` is on the server: only now a
+    /// document saved there counts as saved ([`confirm_saved`]).
+    Saved { path: String },
 }
 
 pub type RemoteInbox = Arc<Mutex<Vec<RemoteEvent>>>;
@@ -59,8 +64,9 @@ pub type RemoteInbox = Arc<Mutex<Vec<RemoteEvent>>>;
 pub type ListFn = Box<dyn FnMut(&str) -> io::Result<Vec<RemoteEntry>>>;
 /// [`RemoteStorage::fetch`].
 pub type FetchFn = Box<dyn FnMut(&str, Purpose)>;
-/// [`RemoteStorage::write`].
-pub type WriteFn = Box<dyn FnMut(&str, &[u8]) -> Result<(), String>>;
+/// [`RemoteStorage::write`]: the path, the bytes, and whether the save creates a file (a Save As
+/// to a path other than the document's own): an existing file there must not be replaced.
+pub type WriteFn = Box<dyn FnMut(&str, &[u8], bool) -> Result<(), String>>;
 
 /// The host's remote storage (web: same-origin WebDAV).
 pub struct RemoteStorage {
@@ -76,6 +82,18 @@ pub struct RemoteStorage {
     /// [`RemoteEvent::SaveFailed`]. An error for a path that cannot be written (a read-only mount).
     pub write: WriteFn,
     pub inbox: RemoteInbox,
+    /// Paths of Save As saves started but not yet written (the app fills it, the host leaves it
+    /// empty): [`crate::io::write_to`] hands each to `write` as a file to create.
+    pub new_files: HashSet<String>,
+}
+
+/// A save to a mount that was started and that the server has not confirmed: the document stays
+/// unsaved (so closing it asks first) until [`RemoteEvent::Saved`] brings the snapshot it was
+/// saved from.
+pub(crate) struct Unconfirmed {
+    pub uid: u64,
+    pub path: String,
+    pub snapshot: Arc<Document>,
 }
 
 /// What the remote dialog chooses ([`crate::dialogs::remote`]).
@@ -216,6 +234,7 @@ pub fn drain(app: &mut VectorcraftApp) {
         match event {
             RemoteEvent::Fetched { path, purpose, result } => fetched(app, path, purpose, result),
             RemoteEvent::SaveFailed { path, message } => save_failed(app, &path, &message),
+            RemoteEvent::Saved { path } => confirm_saved(app, &path),
         }
     }
 }
@@ -240,6 +259,30 @@ fn fetched(app: &mut VectorcraftApp, path: String, purpose: Purpose, result: Res
             Some(queue) => queue.lock().unwrap_or_else(|e| e.into_inner()).push(PlaceArrival { name, bytes, drop: None }),
             None => app.status("Couldn't place: no Place dialog"),
         },
+    }
+}
+
+/// A save to the mount was started for document `uid` (its file is already the document's own):
+/// the document counts as unsaved until the server confirms the upload ([`confirm_saved`]), so
+/// closing or quitting asks first and a failed upload loses nothing.
+pub(crate) fn hold_unsaved(app: &mut VectorcraftApp, uid: u64, path: &str) {
+    let Some(st) = app.session.document_mut(uid) else { return };
+    let snapshot = st.saved_snapshot();
+    st.mark_unsaved();
+    app.remote_saving.retain(|u| !(u.uid == uid && u.path == path));
+    app.remote_saving.push(Unconfirmed { uid, path: path.to_string(), snapshot });
+}
+
+/// The server has the newest upload of `path`: the documents saved there count as saved, as of the
+/// snapshot each was saved from (edits made since keep them modified).
+fn confirm_saved(app: &mut VectorcraftApp, path: &str) {
+    let (done, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut app.remote_saving).into_iter().partition(|u| u.path == path);
+    app.remote_saving = rest;
+    for u in done {
+        // Only while the document still has that file: a Save As elsewhere since is not this save.
+        if let Some(st) = app.session.document_mut(u.uid).filter(|st| st.path.as_deref() == Some(path)) {
+            st.mark_saved_as(&u.snapshot);
+        }
     }
 }
 

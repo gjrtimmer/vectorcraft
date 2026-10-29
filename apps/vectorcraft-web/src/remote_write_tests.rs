@@ -73,10 +73,12 @@ fn hostile_paths_build_no_request() {
 fn a_changed_target_is_a_conflict_not_an_overwrite() {
     let was = Known::Etag("\"v1\"".into());
     assert_eq!(precondition(&was, 200, Some("\"v1\"")), Precondition::Proceed { overwrite: true });
-    assert_eq!(precondition(&was, 200, Some("W/\"v1\"")), Precondition::Proceed { overwrite: true });
+    // a weak ETag never proves the bytes are the same
+    assert_eq!(precondition(&was, 200, Some("W/\"v1\"")), Precondition::Conflict);
+    assert_eq!(precondition(&Known::Etag("W/\"v1\"".into()), 200, Some("W/\"v1\"")), Precondition::Conflict);
     assert_eq!(precondition(&was, 200, Some("\"v2\"")), Precondition::Conflict);
-    // no ETag from the server now: it cannot be checked
-    assert_eq!(precondition(&was, 200, None), Precondition::Proceed { overwrite: true });
+    // no ETag from the server now: it cannot be checked, so it is not overwritten
+    assert_eq!(precondition(&was, 200, None), Precondition::Conflict);
     assert_eq!(precondition(&Known::NoEtag, 200, Some("\"x\"")), Precondition::Proceed { overwrite: true });
     // a file this session never saw must not exist
     assert_eq!(precondition(&Known::Unknown, 200, Some("\"x\"")), Precondition::Exists);
@@ -126,4 +128,22 @@ fn every_upload_has_a_part_file_of_its_own() {
         assert!(put_part(&cfg(), "/rw/x.vectorcraft", bad).is_err(), "{bad:?}");
     }
     assert!(!valid_token(&"a".repeat(65)));
+}
+
+/// The version a save leaves is the move's own, or the target's only when it is the upload's.
+#[test]
+fn a_saved_version_is_tied_to_the_upload() {
+    use crate::remote_write::{SavedVersion as V, head_part, saved_version};
+    let v = |s: &str| V::Etag(s.to_string());
+    assert_eq!(saved_version(Some("\"m\""), Some("\"p\""), Some("\"x\"")), v("\"m\""));
+    assert_eq!(saved_version(None, Some("\"p\""), Some("\"p\"")), v("\"p\""));
+    // someone wrote in between, or the upload's version is unknown or weak: not tied
+    assert_eq!(saved_version(None, Some("\"p\""), Some("\"x\"")), V::Unbound);
+    assert_eq!(saved_version(None, None, Some("\"x\"")), V::Unbound);
+    assert_eq!(saved_version(Some("W/\"m\""), Some("W/\"p\""), Some("W/\"p\"")), V::Unbound);
+    // a server without ETags is as when the file was opened
+    assert_eq!(saved_version(None, None, None), V::NoEtag);
+    assert_eq!(saved_version(None, Some("\"p\""), Some(" ")), V::NoEtag);
+    let h = head_part(&cfg(), "/rw/x.vectorcraft", "a1b2").unwrap();
+    assert_eq!((h.method, h.url.as_str()), ("HEAD", "/dav/rw/x.vectorcraft.a1b2.part"));
 }
