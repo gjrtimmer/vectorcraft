@@ -44,11 +44,17 @@ mod remote_config_tests;
 mod remote_dav;
 #[cfg(test)]
 mod remote_dav_tests;
+#[cfg(target_arch = "wasm32")]
+mod remote_http;
 #[cfg(any(target_arch = "wasm32", test))]
 #[allow(dead_code)]
 mod remote_roots;
 #[cfg(target_arch = "wasm32")]
 mod remote_upload;
+#[cfg(any(target_arch = "wasm32", test))]
+mod remote_util;
+#[cfg(test)]
+mod remote_util_tests;
 #[cfg(any(target_arch = "wasm32", test))]
 #[allow(dead_code)]
 mod remote_write;
