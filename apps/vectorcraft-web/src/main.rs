@@ -52,6 +52,7 @@ mod remote_roots;
 #[cfg(target_arch = "wasm32")]
 mod remote_upload;
 #[cfg(any(target_arch = "wasm32", test))]
+#[allow(dead_code)]
 mod remote_util;
 #[cfg(test)]
 mod remote_util_tests;

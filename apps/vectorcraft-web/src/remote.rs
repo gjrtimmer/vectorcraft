@@ -48,16 +48,19 @@ thread_local! {
     static STATE: RefCell<State> = RefCell::new(State::default());
 }
 
+/// Seconds since the page started (monotonic).
 fn now_s() -> f64 {
     js_sys::Date::now() / 1000.0
 }
 
+/// Ask the UI for a frame (something arrived).
 fn repaint() {
     if let Some(ctx) = STATE.with(|s| s.borrow().ctx.clone()) {
         ctx.request_repaint();
     }
 }
 
+/// The remote config and the page's origin, or why remote storage is off.
 pub(crate) fn cfg_and_origin() -> Result<(Config, String), String> {
     STATE.with(|s| {
         let s = s.borrow();
@@ -102,6 +105,7 @@ async fn propfind(dir: &str) -> Result<Vec<Child>, String> {
     Ok(remote_dav::children_of(&cfg, &mount, dir, &origin, entries))
 }
 
+/// Store a listing's answer (entries, or the error) for `dir` and end its loading state.
 fn record_dir(dir: &str, res: Result<Vec<Child>, String>) {
     let now = now_s();
     STATE.with(|s| {
@@ -121,12 +125,14 @@ fn record_dir(dir: &str, res: Result<Vec<Child>, String>) {
     });
 }
 
+/// Ask the UI for a frame after `d`.
 fn repaint_after(d: std::time::Duration) {
     if let Some(ctx) = STATE.with(|s| s.borrow().ctx.clone()) {
         ctx.request_repaint_after(d);
     }
 }
 
+/// Start the PROPFIND of `dir` in the background; the Media Browser sees it on a later frame.
 fn start_listing(dir: String) {
     // Look again when the last error may give way to "Loading…".
     repaint_after(std::time::Duration::from_secs_f64(util::LOADING_GRACE_S + 0.05));
@@ -171,6 +177,7 @@ fn list(dir: &str) -> io::Result<Vec<RemoteEntry>> {
     result
 }
 
+/// Is `path` on a remote mount?
 fn is_remote(path: &str) -> bool {
     STATE.with(|s| s.borrow().cfg.as_ref().is_some_and(|c| c.mount_for(path).is_some()))
 }
@@ -184,21 +191,27 @@ pub(crate) fn forget(path: &str) {
     });
 }
 
-/// GET a whole file, remembering its ETag for the save that follows.
-async fn get_file(path: &str) -> Result<Vec<u8>, String> {
+/// GET a whole file. A file opened (not one placed) has its ETag remembered for the save that
+/// follows, once its body was read in full.
+async fn get_file(path: &str, purpose: Purpose) -> Result<Vec<u8>, String> {
     let (cfg, _) = cfg_and_origin()?;
     let r = fetch("GET", &cfg.url_for(path)?, &[], None).await?;
     if r.status() != 200 {
         return Err(format!("the server answered {}", r.status()));
     }
-    crate::remote_upload::note_opened(path, header(&r, "etag"));
-    read_body(&r, MAX_FILE_BYTES).await
+    let etag = header(&r, "etag");
+    let bytes = read_body(&r, MAX_FILE_BYTES).await?;
+    if purpose == Purpose::Open {
+        crate::remote_upload::note_opened(path, etag);
+    }
+    Ok(bytes)
 }
 
+/// Fetch `path` in the background; the result is a [`RemoteEvent::Fetched`] in the inbox.
 fn start_fetch(path: &str, purpose: Purpose, inbox: &RemoteInbox) {
     let (path, inbox) = (path.to_string(), inbox.clone());
     wasm_bindgen_futures::spawn_local(async move {
-        let result = get_file(&path).await;
+        let result = get_file(&path, purpose).await;
         inbox.lock().unwrap_or_else(|e| e.into_inner()).push(RemoteEvent::Fetched { path, purpose, result });
         repaint();
     });

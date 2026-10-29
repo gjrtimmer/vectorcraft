@@ -34,6 +34,7 @@ pub fn note_opened(path: &str, etag: Option<String>) {
     UPLOADS.with(|u| u.borrow_mut().seen.insert(path.to_string(), etag));
 }
 
+/// What this session knows about the version of `path` on the server.
 fn known(path: &str) -> Known {
     UPLOADS.with(|u| match u.borrow().seen.get(path) {
         Some(Some(e)) => Known::Etag(e.clone()),
@@ -42,6 +43,7 @@ fn known(path: &str) -> Known {
     })
 }
 
+/// Send one request of a save with its time limit.
 async fn send(r: &Req, body: Option<&[u8]>) -> Result<Resp, String> {
     let headers: Vec<(&str, &str)> = r.headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
     fetch(r.method, &r.url, &headers, body).await
@@ -86,25 +88,33 @@ fn report(path: &str, outcome: &Outcome, inbox: &RemoteInbox) {
     inbox.lock().unwrap_or_else(|e| e.into_inner()).push(RemoteEvent::SaveFailed { path: path.to_string(), message });
 }
 
-/// Upload `bytes` to `<path>.part`, check the target, move the upload over it.
+/// A token for one upload's `.part` file: 128 random bits as hex, so two saves of a path (this
+/// tab or another client) never share a part file.
+fn new_token() -> String {
+    format!("{:016x}{:016x}", js_sys::Math::random().to_bits(), js_sys::Math::random().to_bits() ^ js_sys::Date::now().to_bits())
+}
+
+/// Upload `bytes` to this upload's own `.part` file, check the target, move the upload over it.
 async fn upload(path: &str, bytes: &[u8]) -> Outcome {
     let (cfg, origin) = match cfg_and_origin() {
         Ok(v) => v,
         Err(e) => return Outcome::Failed(e),
     };
-    let outcome = upload_steps(&cfg, &origin, path, bytes).await;
+    let token = new_token();
+    let outcome = upload_steps(&cfg, &origin, path, &token, bytes).await;
     if outcome != Outcome::Saved {
         // best effort: the .part file is of no use
-        if let Ok(d) = rw::delete_part(&cfg, path) {
+        if let Ok(d) = rw::delete_part(&cfg, path, &token) {
             let _ = send(&d, None).await;
         }
     }
     outcome
 }
 
-async fn upload_steps(cfg: &crate::remote_config::Config, origin: &str, path: &str, bytes: &[u8]) -> Outcome {
+/// The requests of one save, in order; the first that fails ends it.
+async fn upload_steps(cfg: &crate::remote_config::Config, origin: &str, path: &str, token: &str, bytes: &[u8]) -> Outcome {
     let step = Outcome::Failed;
-    let put = match rw::put_part(cfg, path) {
+    let put = match rw::put_part(cfg, path, token) {
         Ok(r) => r,
         Err(e) => return step(e),
     };
@@ -124,11 +134,12 @@ async fn upload_steps(cfg: &crate::remote_config::Config, origin: &str, path: &s
         Ok(r) => match rw::precondition(&known(path), r.status(), header(&r, "etag").as_deref()) {
             Precondition::Proceed { overwrite } => overwrite,
             Precondition::Conflict => return Outcome::Conflict,
+            Precondition::Exists => return Outcome::Exists,
             Precondition::Failed(e) => return step(e),
         },
         Err(e) => return step(e),
     };
-    let mv = match rw::move_part(cfg, origin, path, overwrite) {
+    let mv = match rw::move_part(cfg, origin, path, token, overwrite) {
         Ok(r) => r,
         Err(e) => return step(e),
     };
