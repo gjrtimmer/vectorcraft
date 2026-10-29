@@ -49,6 +49,27 @@ How the web shell (`apps/vectorcraft-web/src/web.rs`) differs from desktop:
 - **No control server:** browsers can't listen on TCP. To automate the web build, drive headless Chrome with `--remote-debugging-port`.
 - Quick smoke test: `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --enable-unsafe-webgpu --screenshot=web.png --window-size=1440,900 --virtual-time-budget=15000 http://127.0.0.1:8766/` (headless Chrome on macOS gets a real WebGPU adapter).
 
+### Remote storage
+
+The web build can open, place and save files on a WebDAV server, so a team or a self-hosted setup keeps its documents on a server instead of in downloads. It is off unless the site serves a config file:
+
+```json
+{"remote": {"mounts": [{"path": "/data", "url": "dav/", "name": "Server", "writable": true}]}}
+```
+
+Save it as `vectorcraft-config.json` beside `index.html`. Each mount maps a virtual path (`path`, what documents remember) to a WebDAV collection on the **same origin** as the page (`url`, relative to the page or absolute; other origins are refused). `name` is what the dialog shows, `writable` defaults to `false`. A missing or invalid file leaves the web build exactly as it was: the File menu has no remote entries.
+
+With at least one mount, File gains **Open Remote…**, **Place from Remote…** and **Save As Remote…** (Open… and Place… become Open Local… and Place Local…). There are no default shortcuts. All three are commands (`file.openRemote`, `file.placeRemote`, `file.saveAsRemote`, each takes an optional `{path}`).
+
+- **Open Remote** lists the mounts with PROPFIND, reads the whole file with GET (up to 512 MiB) and opens it as a document that remembers its remote path, so File › Save writes back to the server.
+- **Save** uploads to `<name>.part` beside the target, compares the target's ETag with the one seen when the document was opened (or last saved), then moves the upload over it. A file that changed on the server is never replaced: the document stays unsaved and the user is told to use Save As. A failed upload leaves the old file whole. A read-only mount says so. Uploads run in the background, one per path.
+- **Save As Remote** picks a folder and a name; a name without a save format's extension gets `.vectorcraft`. It refuses a name that is already there.
+- **Place from Remote** embeds the file. A link to a remote path would not resolve when the document is opened again, so the Place dialog gets the bytes without a path.
+
+Everything from the config, the listings and the server's answers is untrusted: paths with `..`, empty segments, backslashes or control characters never map to a URL, a `href` outside the mount is dropped, and listing and body sizes are capped. Requests use `mode: same-origin`, so a redirect to another origin fails.
+
+To try it, serve `dist/web` with any WebDAV server that answers PROPFIND, PUT, MOVE, HEAD and DELETE on the same origin as the pages, for example nginx with `ngx_http_dav_module` and `dav_methods PUT DELETE MKCOL COPY MOVE; dav_ext_methods PROPFIND;` on `location /dav/`, or `rclone serve webdav` behind a reverse proxy that also serves the static files. The pure parts (`remote_config.rs`, `remote_dav.rs`, `remote_write.rs`) are tested natively: `cargo test -p vectorcraft-web`.
+
 ## Desktop graphics processor
 
 The canvas is rasterized on the CPU (`vectorcraft-render`, vello_cpu); the GPU (wgpu, through eframe) only composites the canvas texture and draws the UI, so any GPU that can show the window will do. The desktop app picks the window's adapter itself (`apps/vectorcraft/src/gpu.rs`, eframe's `native_adapter_selector`) and logs every adapter it found and the one it uses.
