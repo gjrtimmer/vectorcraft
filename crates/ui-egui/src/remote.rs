@@ -165,10 +165,23 @@ pub(crate) fn accept(app: &mut VectorcraftApp, mode: Mode, path: &str) -> Result
     if !(remote.is_remote)(path) {
         return Err(format!("{path} is not on remote storage"));
     }
+    if mode == Mode::Open {
+        // One document per remote path: two would share one upload queue, and the older one could be
+        // marked saved by an upload of the newer one's bytes.
+        if app.remote_opening.iter().any(|p| p == path) {
+            return Ok(json!({"pending": "fetch", "path": path}));
+        }
+        if app.session.documents().iter().any(|d| d.path.as_deref() == Some(path)) {
+            return Err(format!("{path} is already open"));
+        }
+    }
     let name = fileio::file_name(path);
     match mode {
         Mode::Open | Mode::Place => {
             let purpose = if mode == Mode::Open { Purpose::Open } else { Purpose::Place };
+            if mode == Mode::Open {
+                app.remote_opening.push(path.to_string());
+            }
             (remote.fetch)(path, purpose);
             app.status(format!("Fetching {name}…"));
             Ok(json!({"pending": "fetch", "path": path}))
@@ -182,21 +195,14 @@ pub(crate) fn accept(app: &mut VectorcraftApp, mode: Mode, path: &str) -> Result
 
 /// Open the file at `path` when it is on a remote mount: start fetching it (the document opens when
 /// the bytes arrive, see [`drain`]) → `{pending: "fetch"}`. `None` for any other path. A second
-/// open of a path whose fetch is still running does nothing.
+/// open of a path whose fetch is still running does nothing, and a path an open document holds is
+/// refused ([`accept`]).
 pub(crate) fn open_path(app: &mut VectorcraftApp, path: &str) -> Option<Result<Value, String>> {
     let remote = app.services.remote.as_ref()?;
     if !(remote.is_remote)(path) {
         return None;
     }
-    if app.remote_opening.iter().any(|p| p == path) {
-        return Some(Ok(json!({"pending": "fetch", "path": path})));
-    }
-    app.remote_opening.push(path.to_string());
-    let r = accept(app, Mode::Open, path);
-    if r.is_err() {
-        app.remote_opening.retain(|p| p != path);
-    }
-    Some(r)
+    Some(accept(app, Mode::Open, path))
 }
 
 /// `path` with the extension of a save format: kept when it names one, else `.vectorcraft`.

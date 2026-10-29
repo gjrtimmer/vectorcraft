@@ -8,7 +8,7 @@ use std::rc::Rc;
 use serde_json::json;
 use vectorcraft_engine::Session;
 
-use super::{Mode, Purpose, RemoteEntry, RemoteEvent, RemoteInbox, RemoteMount, RemoteStorage, join, save_path, valid_name};
+use super::{Mode, Purpose, RemoteEntry, RemoteEvent, RemoteInbox, RemoteMount, RemoteStorage, accept, join, save_path, valid_name};
 use crate::place::PlaceInbox;
 use crate::{Services, VectorcraftApp, menus};
 
@@ -309,6 +309,26 @@ fn opening_a_remote_path_fetches_it_once_until_it_arrives() {
     crate::remote::drain(&mut app);
     assert_eq!(app.session.active().and_then(|d| d.path.clone()).as_deref(), Some(path));
     assert!(app.remote_opening.is_empty());
+}
+
+/// A remote path an open document holds is not opened a second time, from the dialog or by path.
+#[test]
+fn a_remote_path_is_not_opened_twice() {
+    let (mut app, inbox, log) = remote_app();
+    let path = "/rw/docs/a.vectorcraft";
+    // the dialog's OK while the first fetch is on its way
+    crate::io::open_file(&mut app, path, false).unwrap();
+    assert_eq!(accept(&mut app, Mode::Open, path).unwrap()["pending"], "fetch");
+    assert_eq!(log.borrow().fetched.len(), 1);
+    inbox.lock().unwrap().push(RemoteEvent::Fetched { path: path.into(), purpose: Purpose::Open, result: Ok(native_bytes()) });
+    crate::remote::drain(&mut app);
+    let err = accept(&mut app, Mode::Open, path).unwrap_err();
+    assert!(err.contains("already open"), "{err}");
+    assert!(crate::io::open_file(&mut app, path, false).is_err());
+    assert_eq!(log.borrow().fetched.len(), 1, "no second fetch");
+    // placing it is not opening it
+    accept(&mut app, Mode::Place, path).unwrap();
+    assert_eq!(log.borrow().fetched.len(), 2);
 }
 
 /// A failed remote open can be tried again.
