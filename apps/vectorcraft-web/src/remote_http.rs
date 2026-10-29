@@ -70,8 +70,8 @@ fn failure(fired: &Cell<bool>, method: &str, limit: Duration, e: wasm_bindgen::J
     if fired.get() { timeout_message(method, limit) } else { js_err(e) }
 }
 
-/// A `fetch` that stays on this origin and always asks the server (the service worker leaves
-/// `no-cache` requests alone). Limited to [`timeout_for`] the method.
+/// A `fetch` that stays on this origin, always asks the server and is never stored by the browser
+/// (the service worker leaves `no-store` requests alone). Limited to [`timeout_for`] the method.
 pub(crate) async fn fetch(method: &str, url: &str, headers: &[(&str, &str)], body: Option<&[u8]>) -> Result<Resp, String> {
     fetch_within(method, url, headers, body, timeout_for(method)).await
 }
@@ -82,7 +82,7 @@ pub(crate) async fn fetch_within(method: &str, url: &str, headers: &[(&str, &str
     init.set_method(method);
     // Same origin only: a redirect elsewhere fails instead of leaking the request.
     init.set_mode(web_sys::RequestMode::SameOrigin);
-    init.set_cache(web_sys::RequestCache::NoCache);
+    init.set_cache(web_sys::RequestCache::NoStore);
     let h = web_sys::Headers::new().map_err(js_err)?;
     for (k, v) in headers {
         h.set(k, v).map_err(js_err)?;
@@ -110,18 +110,31 @@ pub(crate) fn header(r: &web_sys::Response, name: &str) -> Option<String> {
     r.headers().get(name).ok().flatten()
 }
 
-/// The body, refused before reading when `Content-Length` exceeds `cap` and after when it does.
+/// The body, refused before reading when `Content-Length` exceeds `cap`, and read in chunks so a
+/// body without (or with a wrong) `Content-Length` stops at `cap` instead of filling the memory.
 /// Reading it is still bound by the request's time limit.
 pub(crate) async fn read_body(r: &Resp, cap: usize) -> Result<Vec<u8>, String> {
     if header(r, "content-length").and_then(|h| remote_dav::parse_content_length(&h)).is_some_and(|n| n > cap as u64) {
         return Err("the file is too large".into());
     }
     let fail = |e| failure(&r.deadline.fired, &r.method, r.limit, e);
-    let promise = r.array_buffer().map_err(fail)?;
-    let buf = JsFuture::from(promise).await.map_err(fail)?;
-    let a = js_sys::Uint8Array::new(&buf);
-    if a.length() as usize > cap {
-        return Err("the file is too large".into());
+    let Some(stream) = r.body() else { return Ok(Vec::new()) };
+    let reader: web_sys::ReadableStreamDefaultReader = stream.get_reader().unchecked_into();
+    let mut out: Vec<u8> = Vec::new();
+    loop {
+        let chunk = JsFuture::from(reader.read()).await.map_err(fail)?;
+        if js_sys::Reflect::get(&chunk, &"done".into()).ok().and_then(|v| v.as_bool()).unwrap_or(true) {
+            return Ok(out);
+        }
+        let bytes = js_sys::Uint8Array::new(&js_sys::Reflect::get(&chunk, &"value".into()).map_err(fail)?);
+        let at = out.len();
+        let end = at.checked_add(bytes.length() as usize).filter(|e| *e <= cap);
+        let Some(end) = end else {
+            // stop the download: the rest is not wanted
+            let _ = reader.cancel();
+            return Err("the file is too large".into());
+        };
+        out.resize(end, 0);
+        bytes.copy_to(&mut out[at..]);
     }
-    Ok(a.to_vec())
 }
